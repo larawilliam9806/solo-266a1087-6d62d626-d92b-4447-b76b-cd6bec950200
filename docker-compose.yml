@@ -1,0 +1,15 @@
+services:
+  furnace-archive:
+    build: .
+    image: furnace-archive:latest
+    container_name: furnace-archive
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      FURNACE_DB_PATH: /data/archive.db
+    volumes:
+      - archive-data:/data
+    restart: unless-stopped
+
+volumes:
+  archive-data:
