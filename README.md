@@ -23,8 +23,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/runs`（别名 `/archive`、`/archives`、`/api/...`） | 按炉次提交分段采样并归档 |
-| `PUT` | `/runs/{run_id}` | 同上，炉次号取路径 |
+| `POST` | `/runs`（别名 `/archive`、`/archives`、`/api/...`） | 按炉次提交分段采样并归档；带 `stream=1` 时为流式分段提交 |
+| `PUT` | `/runs/{run_id}` | 同上，炉次号取路径（同样支持 `stream=1`） |
 | `GET` | `/runs/{run_id}` | 按炉次回查归档折线与超温时段 |
 | `GET` | `/runs` | 列出全部炉次 |
 | `GET` | `/health` | 健康检查 |
@@ -58,6 +58,35 @@ curl -X POST http://localhost:8000/runs \
 
 成功时返回 `200` 且 `archived: true`，含归档后的折线 `segments` 与超温时段
 `over_temperature_periods`。
+
+### 流式补交（`stream=1`，长炉次推荐）
+
+整份采样一次读进内存对长炉次开销过大。请求带 `stream=1`（也接受
+`streaming=1` / `stream=true`）时，炉次号与 `limit`、`tolerance`、
+`max_points` 照旧从查询串传入（键名别名同上），正文是一个 **JSON 数组的分段
+采样**，至少一段；每段是由 `[整数毫秒, 整数温度]` 点对组成的非空数组：
+
+```bash
+curl -X POST \
+  "http://localhost:8000/runs?run_id=H-2026-002&limit=217&tolerance=3&max_points=200&stream=1" \
+  -H 'Content-Type: application/json' \
+  --data-binary @examples/sample_stream.json
+```
+
+流式正文采用严格格式（不接受 `null`、点对象或数字字符串等宽松写法）：
+
+- 顶层必须是数组，段与段之间即缺测边界，段顺序、段内缺测断开与普通交档一致；
+- 每段非空，每点恰好两个整数；段内毫秒必须严格递增，各段时间轴相互独立；
+- 服务按网络接收块增量解析，**收到一整段就立即按原规则压缩并释放原始采样**，
+  因此除单个接收块外，处理本次交档的工作内存只随**最长单段**和
+  **`max_points` 存点上限**增长，与总点数、总段数无关；
+- 即使中途已超 `max_points`，仍继续校验并核算余下分段。正文合法但超限时，
+  回执与普通交档相同（`archived: false`、`error: point_limit_exceeded`），
+  并给出整炉所需的最少点数 `required_points`，不写入、不覆盖原档；
+- 分段或正文结尾无效（含连接中断、正文被截断）一律返回 `422` 输入错误；
+- 仅当整炉数据完整、合法且未超限，并且保存成功时才换档；断传、输入错误、
+  超限或保存失败（`500`）时，原档仍可原样回查；
+- 成功回执的字段与普通交档完全一致。
 
 ### 超出存点上限
 
